@@ -1,0 +1,105 @@
+name: Deploy Apache Web Server
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:  # Allow manual triggers
+
+env:
+  APACHE_ROOT: /var/www/html
+  WEBSITE_DIR: ./public-html
+
+jobs:
+  deploy:
+    name: Deploy to Apache Web Server
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    
+    # Add deployment protection
+    environment:
+      name: production
+      url: ${{ steps.deploy.outputs.url }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1  # Optimize checkout performance
+
+      - name: Cache apt packages
+        uses: actions/cache@v3
+        with:
+          path: /var/cache/apt/archives
+          key: ${{ runner.os }}-apt-${{ hashFiles('**/apache-config/**') }}
+          restore-keys: |
+            ${{ runner.os }}-apt-
+
+      - name: Cache website files
+        uses: actions/cache@v3
+        with:
+          path: ${{ env.WEBSITE_DIR }}
+          key: ${{ runner.os }}-website-${{ hashFiles('${{ env.WEBSITE_DIR }}/**') }}
+          restore-keys: |
+            ${{ runner.os }}-website-
+
+      - name: Install Apache and security tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y apache2 apache2-utils
+          # Verify Apache installation
+          apache2 -v
+          # Install security headers module
+          sudo a2enmod headers
+          sudo a2enmod ssl
+
+      - name: Configure Apache security
+        run: |
+          # Add security headers
+          sudo tee /etc/apache2/conf-available/security-headers.conf << 'EOF'
+          Header always set X-Content-Type-Options "nosniff"
+          Header always set X-Frame-Options "SAMEORIGIN"
+          Header always set X-XSS-Protection "1; mode=block"
+          Header always set Strict-Transport-Security "max-age=31536000; includeSubDomains"
+          EOF
+          sudo a2enconf security-headers
+
+      - name: Copy and verify website files
+        id: deploy
+        run: |
+          # Create backup of current deployment
+          sudo cp -r ${{ env.APACHE_ROOT }} ${{ env.APACHE_ROOT }}.backup
+          
+          # Copy new files
+          sudo cp -r ${{ env.WEBSITE_DIR }}/* ${{ env.APACHE_ROOT }}/
+          sudo chown -R www-data:www-data ${{ env.APACHE_ROOT }}
+          
+          # Verify file integrity
+          find ${{ env.APACHE_ROOT }} -type f -exec sha256sum {} \; > /tmp/new_checksums
+          if ! diff /tmp/new_checksums <(find ${{ env.WEBSITE_DIR }} -type f -exec sha256sum {} \;) > /dev/null; then
+            echo "File integrity check failed"
+            exit 1
+          fi
+          
+          # Set proper permissions
+          sudo find ${{ env.APACHE_ROOT }} -type d -exec chmod 755 {} \;
+          sudo find ${{ env.APACHE_ROOT }} -type f -exec chmod 644 {} \;
+
+      - name: Restart Apache
+        run: |
+          sudo systemctl restart apache2
+          # Wait for Apache to be fully started
+          sleep 5
+          # Verify Apache is running
+          if ! systemctl is-active --quiet apache2; then
+            echo "Apache failed to start"
+            exit 1
+          fi
+
+      - name: Rollback on failure
+        if: failure()
+        run: |
+          echo "Deployment failed, rolling back..."
+          sudo rm -rf ${{ env.APACHE_ROOT }}/*
+          sudo cp -r ${{ env.APACHE_ROOT }}.backup/* ${{ env.APACHE_ROOT }}/
+          sudo systemctl restart apache2
