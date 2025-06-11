@@ -75,6 +75,12 @@ jobs:
           echo "Creating backup..."
           sudo cp -r ${{ env.APACHE_ROOT }} ${{ env.APACHE_ROOT }}.backup
           
+          # Remove default Apache files
+          echo "Removing default Apache files..."
+          sudo rm -f ${{ env.APACHE_ROOT }}/index.nginx-debian.html
+          sudo rm -f ${{ env.APACHE_ROOT }}/index.html
+          sudo rm -f ${{ env.APACHE_ROOT }}/index.htm
+          
           # Copy new files
           echo "Copying new files..."
           sudo cp -r ${{ env.WEBSITE_DIR }}/* ${{ env.APACHE_ROOT }}/
@@ -93,19 +99,15 @@ jobs:
           find ${{ env.APACHE_ROOT }} -type f -print > /tmp/dest_files
           cat /tmp/dest_files
           
-          # Compare file lists
-          echo "Comparing file lists..."
-          if ! diff /tmp/source_files /tmp/dest_files > /dev/null; then
-            echo "File lists don't match. Differences:"
-            diff /tmp/source_files /tmp/dest_files
-            exit 1
-          fi
-          
           # Compare file contents
           echo "Comparing file contents..."
           while IFS= read -r file; do
             rel_path=${file#${{ env.WEBSITE_DIR }}/}
             dest_file="${{ env.APACHE_ROOT }}/$rel_path"
+            if [ ! -f "$dest_file" ]; then
+              echo "File missing in destination: $rel_path"
+              exit 1
+            fi
             if ! cmp -s "$file" "$dest_file"; then
               echo "Files differ: $rel_path"
               exit 1
