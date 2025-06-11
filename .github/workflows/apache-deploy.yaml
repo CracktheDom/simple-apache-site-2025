@@ -67,21 +67,55 @@ jobs:
       - name: Copy and verify website files
         id: deploy
         run: |
+          # Debug: Check if source directory exists and list its contents
+          echo "Checking source directory..."
+          ls -la ${{ env.WEBSITE_DIR }} || echo "Source directory not found"
+          
           # Create backup of current deployment
+          echo "Creating backup..."
           sudo cp -r ${{ env.APACHE_ROOT }} ${{ env.APACHE_ROOT }}.backup
           
           # Copy new files
+          echo "Copying new files..."
           sudo cp -r ${{ env.WEBSITE_DIR }}/* ${{ env.APACHE_ROOT }}/
           sudo chown -R www-data:www-data ${{ env.APACHE_ROOT }}
           
-          # Verify file integrity
-          find ${{ env.APACHE_ROOT }} -type f -exec sha256sum {} \; > /tmp/new_checksums
-          if ! diff /tmp/new_checksums <(find ${{ env.WEBSITE_DIR }} -type f -exec sha256sum {} \;) > /dev/null; then
-            echo "File integrity check failed"
+          # Verify file integrity with better error handling
+          echo "Verifying file integrity..."
+          
+          # Get list of files in source directory
+          echo "Listing source files..."
+          find ${{ env.WEBSITE_DIR }} -type f -print > /tmp/source_files
+          cat /tmp/source_files
+          
+          # Get list of files in destination directory
+          echo "Listing destination files..."
+          find ${{ env.APACHE_ROOT }} -type f -print > /tmp/dest_files
+          cat /tmp/dest_files
+          
+          # Compare file lists
+          echo "Comparing file lists..."
+          if ! diff /tmp/source_files /tmp/dest_files > /dev/null; then
+            echo "File lists don't match. Differences:"
+            diff /tmp/source_files /tmp/dest_files
             exit 1
           fi
           
+          # Compare file contents
+          echo "Comparing file contents..."
+          while IFS= read -r file; do
+            rel_path=${file#${{ env.WEBSITE_DIR }}/}
+            dest_file="${{ env.APACHE_ROOT }}/$rel_path"
+            if ! cmp -s "$file" "$dest_file"; then
+              echo "Files differ: $rel_path"
+              exit 1
+            fi
+          done < /tmp/source_files
+          
+          echo "File integrity check passed"
+          
           # Set proper permissions
+          echo "Setting permissions..."
           sudo find ${{ env.APACHE_ROOT }} -type d -exec chmod 755 {} \;
           sudo find ${{ env.APACHE_ROOT }} -type f -exec chmod 644 {} \;
 
